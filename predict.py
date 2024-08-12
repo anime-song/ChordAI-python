@@ -37,6 +37,79 @@ def allocate_gpu_memory(gpu_number=0):
 # GPUを無効にする
 tf.config.set_visible_devices([], 'GPU')
 
+def lastone(iterable):
+    """与えられたイテレータブルオブジェクトの
+    最後の一つの要素の時にTrue、それ以外の時にFalseを返す
+    """
+    # イテレータを取得して最初の値を取得する
+    it = iter(iterable)
+    last = next(it)
+    # 2番目の値から開始して反復子を使い果たすまで実行
+    for val in it:
+        # 一つ前の値を返す
+        yield last, False
+        last = val  # 値の更新
+    # 最後の一つ
+    yield last, True
+
+
+def convert_time_key(pred, bins_per_seconds, minTime=0.1):
+    key = pred[2][0][0]
+
+    times = []
+    tones = [
+        "N",
+        "C",
+        "Db",
+        "D",
+        "Eb",
+        "E",
+        "F",
+        "Gb",
+        "G",
+        "Ab",
+        "A",
+        "Bb",
+        "B",
+        "Am",
+        "Bbm",
+        "Bm",
+        "Cm",
+        "C#m",
+        "Dm",
+        "Ebm",
+        "Em",
+        "Fm",
+        "F#m",
+        "Gm",
+        "G#m"]
+
+    beforeKey = key[0]
+    beforeTime = 0.0
+    nframes = len(key)
+
+    for i, isLast in lastone(range(1, nframes)):
+        if beforeKey != key[i] or isLast:
+            currentTime = i / bins_per_seconds
+
+            if currentTime - beforeTime < minTime:
+                beforeKey = key[i]
+                continue
+
+            currentKey = tones[beforeKey]
+
+            times.append(
+                [beforeTime,
+                 currentTime,
+                 currentKey]
+            )
+
+            beforeTime = currentTime
+            beforeKey = key[i]
+
+    return times
+
+
 def convert_time(pred, bins_per_seconds, minTime=0.1):
     with open("./index.json", mode="r") as f:
         chord_index = json.load(f)
@@ -130,6 +203,38 @@ def preprocess(path, sr=22050, mono=False):
     return S_padding, bins_per_second, duration
 
 
+def minor_key_to_major_key(key):
+    keys = [
+        "N",
+        "C",
+        "Db",
+        "D",
+        "Eb",
+        "E",
+        "F",
+        "Gb",
+        "G",
+        "Ab",
+        "A",
+        "Bb",
+        "B",
+        "Am",
+        "Bbm",
+        "Bm",
+        "Cm",
+        "C#m",
+        "Dm",
+        "Ebm",
+        "Em",
+        "Fm",
+        "F#m",
+        "Gm",
+        "G#m"]
+    index = keys.index(key)
+    if index >= 13:
+        index = index - 12
+    return keys[index]
+
 # モデル読み込み
 model = tf.keras.models.load_model("./model/chordestimation")
 
@@ -149,9 +254,36 @@ while True:
     # [1][0]でクラスごとの確率を取得可能 (ただ確信度が高いためあまり意味はないかも)
 
     times = convert_time(pred, bins_per_second)
+    key_times = convert_time_key(pred, bins_per_second)
+
+    accidental_modified_tiems = []
+    for chord_time in times:
+        chord_start_time = chord_time[0]
+        modified_chord = chord_time[2]
+
+        if modified_chord != "N.C.":
+            for key_time in key_times:
+                if key_time[2] == "N":
+                    continue
+                start_time = key_time[0]
+                end_time = key_time[1]
+
+                if chord_start_time >= start_time and chord_start_time <= end_time:
+                    modified_chord = Chord(modified_chord).modified_accidentals(minor_key_to_major_key(key_time[2])).name
+                    break
+        accidental_modified_tiems.append([
+            chord_time[0],
+            chord_time[1],
+            modified_chord
+        ])
+
 
     with open("./label/{}.txt".format(music_name), mode="w") as f:
-        for t in times:
+        for t in accidental_modified_tiems:
+            f.write("{}	{}	{}\n".format(t[0], t[1], t[2]))
+
+    with open("./keys/{}.txt".format(music_name), mode="w") as f:
+        for t in key_times:
             f.write("{}	{}	{}\n".format(t[0], t[1], t[2]))
 
     print("complete {}".format(music_name))
